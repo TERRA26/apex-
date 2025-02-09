@@ -5,7 +5,8 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState('chat');
-  const [status, setStatus] = useState('idle');
+  const [status, setStatus] = useState('connecting');
+  const [serverConnected, setServerConnected] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -16,9 +17,33 @@ function App() {
     scrollToBottom();
   }, [messages]);
 
+  // Check server connection on mount
+  useEffect(() => {
+    const checkServer = async () => {
+      try {
+        const response = await fetch('http://localhost:3001/status');
+        if (response.ok) {
+          const data = await response.json();
+          setServerConnected(true);
+          setStatus(data.mode === 'auto' ? 'running' : 'idle');
+        } else {
+          setServerConnected(false);
+          setStatus('disconnected');
+        }
+      } catch (error) {
+        setServerConnected(false);
+        setStatus('disconnected');
+      }
+    };
+
+    checkServer();
+    const interval = setInterval(checkServer, 5000); // Check every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || !serverConnected) return;
 
     const userMessage = input.trim();
     setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
@@ -35,25 +60,28 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Network response was not ok');
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || 'Failed to get response from agent');
       }
 
       const data = await response.json();
       setMessages(prev => [...prev, { type: 'agent', content: data.response }]);
+      setStatus('idle');
     } catch (error) {
       console.error('Error:', error);
       setMessages(prev => [...prev, { 
         type: 'error', 
-        content: 'Failed to get response from agent. Please ensure the server is running.' 
+        content: error.message || 'Failed to get response from agent. Please ensure the server is running.' 
       }]);
+      setStatus('error');
+      setTimeout(() => setStatus(serverConnected ? 'idle' : 'disconnected'), 3000);
     }
-
-    setStatus('idle');
   };
 
   const toggleMode = async () => {
+    if (!serverConnected) return;
+
     const newMode = mode === 'chat' ? 'auto' : 'chat';
-    setMode(newMode);
     setStatus('updating');
 
     try {
@@ -66,10 +94,12 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to switch mode');
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || 'Failed to switch mode');
       }
 
       const data = await response.json();
+      setMode(newMode);
       setMessages(prev => [...prev, { 
         type: 'system', 
         content: data.status 
@@ -79,10 +109,20 @@ function App() {
       console.error('Error:', error);
       setMessages(prev => [...prev, { 
         type: 'error', 
-        content: 'Failed to switch mode. Please try again.' 
+        content: error.message || 'Failed to switch mode. Please try again.' 
       }]);
-      setMode(mode); // Revert mode
-      setStatus('idle');
+      setStatus('error');
+      setTimeout(() => setStatus(serverConnected ? 'idle' : 'disconnected'), 3000);
+    }
+  };
+
+  const getStatusColor = () => {
+    switch (status) {
+      case 'thinking': return '#ffd700';
+      case 'running': return '#4caf50';
+      case 'error': return '#f44336';
+      case 'disconnected': return '#9e9e9e';
+      default: return '#1a73e8';
     }
   };
 
@@ -95,11 +135,14 @@ function App() {
             <button 
               onClick={toggleMode}
               className={`mode-button ${mode === 'auto' ? 'active' : ''}`}
-              disabled={status === 'thinking'}
+              disabled={!serverConnected || status === 'thinking'}
             >
               {mode === 'chat' ? 'Switch to Auto Mode' : 'Switch to Chat Mode'}
             </button>
-            <span className={`status-indicator ${status}`}>
+            <span 
+              className={`status-indicator ${status}`}
+              style={{ color: getStatusColor() }}
+            >
               Status: {status}
             </span>
           </div>
@@ -125,12 +168,12 @@ function App() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Type your message..."
-              disabled={mode === 'auto' || status === 'thinking'}
+              placeholder={serverConnected ? "Type your message..." : "Server disconnected..."}
+              disabled={!serverConnected || mode === 'auto' || status === 'thinking'}
             />
             <button 
               type="submit" 
-              disabled={mode === 'auto' || status === 'thinking'}
+              disabled={!serverConnected || mode === 'auto' || status === 'thinking'}
             >
               Send
             </button>
